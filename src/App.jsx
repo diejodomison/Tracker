@@ -218,7 +218,7 @@ export default function App() {
     loadData();
   }, []);
 
-  // ── Realtime polling (every 5s for other users' changes) ──
+  // ── Realtime polling (every 10s for other users' changes) ──
   useEffect(() => {
     if (!supaEnabled || !dbConnected) return;
     const interval = setInterval(async () => {
@@ -228,18 +228,22 @@ export default function App() {
           supaFetch("sessions", "order=id.asc"),
         ]);
         setTasks(prev => {
-          // Merge: keep local running state for tasks we're actively timing
           return tks.map(remote => {
             const local = prev.find(l => l.id === remote.id);
-            if (local && local._sessionStart && local.running) {
-              return { ...remote, running: true, _sessionStart: local._sessionStart };
+            if (!local) return { ...remote, _sessionStart: null };
+            // Always keep the higher actual_seconds (local timer is ahead of server)
+            const keepSeconds = Math.max(local.actual_seconds, remote.actual_seconds);
+            if (local.running) {
+              // Task is running locally — keep all local state
+              return { ...local, actual_seconds: keepSeconds };
             }
-            return { ...remote, _sessionStart: null };
+            // Task not running locally — accept remote but keep higher seconds
+            return { ...remote, actual_seconds: keepSeconds, _sessionStart: null };
           });
         });
         setSessions(sess);
       } catch (e) { /* silent fail on poll */ }
-    }, 5000);
+    }, 10000);
     return () => clearInterval(interval);
   }, [supaEnabled, dbConnected]);
 
@@ -252,7 +256,7 @@ export default function App() {
     return () => clearInterval(tick);
   }, []);
 
-  // ── Save running task's actual_seconds to Supabase every 15s ──
+  // ── Save running task's actual_seconds to Supabase every 5s ──
   useEffect(() => {
     if (!supaEnabled || !dbConnected) return;
     const interval = setInterval(() => {
@@ -261,7 +265,7 @@ export default function App() {
           supaUpdate("tasks", t.id, { actual_seconds: t.actual_seconds });
         }
       });
-    }, 15000);
+    }, 5000);
     return () => clearInterval(interval);
   }, [tasks, supaEnabled, dbConnected]);
 
