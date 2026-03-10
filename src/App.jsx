@@ -66,9 +66,9 @@ function isSupabaseConfigured() {
 
 // ─── Helpers ──────────────────────────────────────────────────────
 function getStatus(task) {
-  if (task.finished) return task.actual_seconds <= task.expected_minutes * 60 ? "Finished Early" : "Finished Late";
+  if (task.finished) return getDisplaySeconds(task) <= task.expected_minutes * 60 ? "Finished Early" : "Finished Late";
   if (task.running) return "In Progress";
-  if (task.actual_seconds > 0) return "Paused";
+  if (getDisplaySeconds(task) > 0) return "Paused";
   return "Pending";
 }
 function getStatusStyle(status) {
@@ -95,6 +95,15 @@ function formatClock(date) {
 function formatDate(date) {
   if (!date) return "";
   return new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// Calculate display seconds: stored accumulated + live elapsed from session_start
+function getDisplaySeconds(task) {
+  if (task.running && task.session_start) {
+    const elapsed = Math.max(0, Math.round((Date.now() - new Date(task.session_start).getTime()) / 1000));
+    return task.actual_seconds + elapsed;
+  }
+  return task.actual_seconds;
 }
 
 // ─── Toggle ───────────────────────────────────────────────────────
@@ -205,14 +214,8 @@ export default function App() {
           supaFetch("sessions", "order=id.asc"),
         ]);
         if (cats.length > 0) setCategories(cats.map(c => ({ id: c.id, name: c.name, color: c.color })));
-        setTasks(tks.map(t => {
-          if (t.running && t.session_start) {
-            // THE FIX: Calculate current time from session_start — same on every device
-            const elapsed = Math.max(0, Math.round((Date.now() - new Date(t.session_start).getTime()) / 1000));
-            return { ...t, actual_seconds: t.actual_seconds + elapsed, _sessionStart: t.session_start };
-          }
-          return { ...t, _sessionStart: null };
-        }));
+        // Just load raw data — getDisplaySeconds() handles the math
+        setTasks(tks);
         setSessions(sess);
         setDbConnected(true);
         setSyncStatus("connected");
@@ -225,7 +228,9 @@ export default function App() {
     loadData();
   }, []);
 
-  // ── Realtime polling (every 8s for other users' changes) ──
+  // ── Poll for other users' changes (every 8s) ──
+  // Skip poll if any task was recently started locally (server might not have caught up)
+  const hasLocalRunning = tasks.some(t => t.running && t.session_start);
   useEffect(() => {
     if (!supaEnabled || !dbConnected) return;
     const interval = setInterval(async () => {
@@ -237,67 +242,23 @@ export default function App() {
         setTasks(prev => {
           return tks.map(remote => {
             const local = prev.find(l => l.id === remote.id);
-            if (remote.running && remote.session_start) {
-              // Running task: ALWAYS calculate from session_start — this is the single source of truth
-              const elapsed = Math.max(0, Math.round((Date.now() - new Date(remote.session_start).getTime()) / 1000));
-              const correctSeconds = remote.actual_seconds + elapsed;
-              // If local is also running this task, keep local _sessionStart
-              const sessionStart = (local && local._sessionStart) ? local._sessionStart : remote.session_start;
-              return { ...remote, actual_seconds: correctSeconds, _sessionStart: sessionStart };
+            // If local has session_start but server doesn't yet, keep local version
+            if (local && local.running && local.session_start && !remote.session_start) {
+              return local;
             }
-            // Not running — just use server value
-            return { ...remote, _sessionStart: null };
+            return remote;
           });
         });
         setSessions(sess);
-      } catch (e) { /* silent fail on poll */ }
+      } catch (e) { /* silent */ }
     }, 8000);
     return () => clearInterval(interval);
   }, [supaEnabled, dbConnected]);
 
-  // ── Timer tick — only increments locally for smooth display ──
+  // ── Tick just to force re-render every second (so getDisplaySeconds recalculates) ──
   useEffect(() => {
-    const tick = setInterval(() => {
-      setNow(new Date());
-      setTasks(prev => prev.map(t => t.running ? { ...t, actual_seconds: t.actual_seconds + 1 } : t));
-    }, 1000);
+    const tick = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(tick);
-  }, []);
-
-  // ── Save running task's actual_seconds to Supabase every 3s ──
-  useEffect(() => {
-    if (!supaEnabled || !dbConnected) return;
-    const interval = setInterval(() => {
-      tasks.forEach(t => {
-        if (t.running && t.id) {
-          supaUpdate("tasks", t.id, { actual_seconds: t.actual_seconds });
-        }
-      });
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [tasks, supaEnabled, dbConnected]);
-
-  // ── Save immediately before page closes/refreshes ──
-  useEffect(() => {
-    if (!supaEnabled) return;
-    const handleUnload = () => {
-      tasks.forEach(t => {
-        if (t.running && t.id) {
-          // Use sendBeacon for reliable save on page close
-          const url = `${SUPABASE_URL}/rest/v1/tasks?id=eq.${t.id}`;
-          const body = JSON.stringify({ actual_seconds: t.actual_seconds });
-          const blob = new Blob([body], { type: "application/json" });
-          navigator.sendBeacon(url, blob);
-          // sendBeacon doesn't support custom headers, so also try fetch with keepalive
-          fetch(url, {
-            method: "PATCH", headers: SUPA.headers, body,
-            keepalive: true,
-          }).catch(() => {});
-        }
-      });
-    };
-    window.addEventListener("beforeunload", handleUnload);
-    return () => window.removeEventListener("beforeunload", handleUnload);
   }, [tasks, supaEnabled]);
 
   const getCatColor = (name) => (categories.find(c => c.name === name) || {}).color || "#94A3B8";
@@ -350,52 +311,57 @@ export default function App() {
 
   const startTask = async (id) => {
     const nowISO = new Date().toISOString();
-    setTasks(prev => prev.map(t => {
-      if (t.id === id) return { ...t, running: true, started_at: t.started_at || nowISO, _sessionStart: nowISO };
-      if (t.running) return { ...t, running: false, _sessionStart: null };
-      return t;
-    }));
+    // Pause any currently running task first
+    const running = tasks.find(t => t.running && t.id !== id);
+    if (running) {
+      await pauseTask(running.id);
+    }
+    // Write to server FIRST so poll can't get stale data
     if (supaEnabled) {
-      const running = tasks.find(t => t.running && t.id !== id);
-      if (running) {
-        await supaUpdate("tasks", running.id, { running: false, actual_seconds: running.actual_seconds, session_start: null });
-        if (running._sessionStart) {
-          const dur = Math.round((Date.now() - new Date(running._sessionStart).getTime()) / 1000);
-          await supaInsert("sessions", { task_id: running.id, started_at: running._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
-          setSessions(prev => [...prev, { task_id: running.id, started_at: running._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" }]);
-        }
-      }
       const task = tasks.find(t => t.id === id);
       await supaUpdate("tasks", id, { running: true, started_at: task?.started_at || nowISO, session_start: nowISO });
     }
+    // Then update local state
+    setTasks(prev => prev.map(t => {
+      if (t.id === id) return { ...t, running: true, started_at: t.started_at || nowISO, session_start: nowISO };
+      return t;
+    }));
   };
 
   const pauseTask = async (id) => {
     const nowISO = new Date().toISOString();
     const task = tasks.find(t => t.id === id);
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, running: false, _sessionStart: null } : t));
-    if (supaEnabled && task) {
-      await supaUpdate("tasks", id, { running: false, actual_seconds: task.actual_seconds, session_start: null });
-      if (task._sessionStart) {
-        const dur = Math.round((Date.now() - new Date(task._sessionStart).getTime()) / 1000);
-        const res = await supaInsert("sessions", { task_id: id, started_at: task._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
+    if (!task) return;
+    const elapsed = task.session_start ? Math.max(0, Math.round((Date.now() - new Date(task.session_start).getTime()) / 1000)) : 0;
+    const newActual = task.actual_seconds + elapsed;
+    // Write to server FIRST
+    if (supaEnabled) {
+      await supaUpdate("tasks", id, { running: false, actual_seconds: newActual, session_start: null });
+      if (task.session_start) {
+        const res = await supaInsert("sessions", { task_id: id, started_at: task.session_start, stopped_at: nowISO, duration_sec: elapsed, note: "" });
         if (res.length > 0) setSessions(prev => [...prev, res[0]]);
       }
     }
+    // Then update local
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, running: false, session_start: null, actual_seconds: newActual } : t));
   };
 
   const finishTask = async (id) => {
     const nowISO = new Date().toISOString();
     const task = tasks.find(t => t.id === id);
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, running: false, finished: true, finished_at: nowISO, _sessionStart: null } : t));
-    if (supaEnabled && task) {
-      await supaUpdate("tasks", id, { running: false, finished: true, finished_at: nowISO, actual_seconds: task.actual_seconds, session_start: null });
-      if (task._sessionStart) {
-        const dur = Math.round((Date.now() - new Date(task._sessionStart).getTime()) / 1000);
-        const res = await supaInsert("sessions", { task_id: id, started_at: task._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
+    if (!task) return;
+    const elapsed = task.session_start ? Math.max(0, Math.round((Date.now() - new Date(task.session_start).getTime()) / 1000)) : 0;
+    const newActual = task.actual_seconds + elapsed;
+    // Write to server FIRST
+    if (supaEnabled) {
+      await supaUpdate("tasks", id, { running: false, finished: true, finished_at: nowISO, actual_seconds: newActual, session_start: null });
+      if (task.session_start) {
+        const res = await supaInsert("sessions", { task_id: id, started_at: task.session_start, stopped_at: nowISO, duration_sec: elapsed, note: "" });
         if (res.length > 0) setSessions(prev => [...prev, res[0]]);
       }
     }
+    // Then update local
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, running: false, finished: true, finished_at: nowISO, session_start: null, actual_seconds: newActual } : t));
   };
 
   const deleteTask = async (id) => {
@@ -418,10 +384,10 @@ export default function App() {
     return { linked, percent: Math.min(percent, 100) };
   }
 
-  const totalWorked = tasks.reduce((s, t) => s + t.actual_seconds, 0);
+  const totalWorked = tasks.reduce((s, t) => s + getDisplaySeconds(t), 0);
   const catBreakdown = categories.map(c => ({
     cat: c.name, color: c.color,
-    seconds: tasks.filter(t => t.category === c.name).reduce((s, t) => s + t.actual_seconds, 0),
+    seconds: tasks.filter(t => t.category === c.name).reduce((s, t) => s + getDisplaySeconds(t), 0),
   })).filter(c => c.seconds > 0).sort((a, b) => b.seconds - a.seconds);
   const pending = tasks.filter(t => !t.finished);
   const finished = tasks.filter(t => t.finished);
@@ -649,7 +615,7 @@ export default function App() {
                 {finished.map(task => {
                   const status = getStatus(task); const ss = getStatusStyle(status);
                   const catColor = getCatColor(task.category);
-                  const diff = task.actual_seconds - task.expected_minutes * 60;
+                  const diff = getDisplaySeconds(task) - task.expected_minutes * 60;
                   const pr = PRIORITY_CONFIG[task.priority] || PRIORITY_CONFIG.Medium;
                   const taskSessions = getTaskSessions(task.id);
                   return (
@@ -669,7 +635,7 @@ export default function App() {
                           <div style={{ display: "flex", gap: 14, fontSize: 10, color: "#334155" }}>
                             <span style={{ color: catColor + "88" }}>● {task.category}</span>
                             <span>Exp: {task.expected_minutes}m</span>
-                            <span>Actual: {formatTime(task.actual_seconds)}</span>
+                            <span>Actual: {formatTime(getDisplaySeconds(task))}</span>
                             <span style={{ color: diff > 0 ? "#f87171" : "#4ade80" }}>{diff > 0 ? `+${formatTime(diff)} over` : `${formatTime(Math.abs(diff))} under`}</span>
                             <span>{taskSessions.length} session{taskSessions.length !== 1 ? "s" : ""}</span>
                           </div>
@@ -764,7 +730,7 @@ export default function App() {
                             <div style={{ textAlign: "center" }}><span style={{ fontSize: 10, color: pr.color }}>{pr.icon} {t.priority}</span></div>
                             <div style={{ textAlign: "center" }}><span style={{ fontSize: 12, fontWeight: 700, color: "#A78BFA" }}>{t.contribution_percent}%</span></div>
                             <div style={{ textAlign: "center" }}><span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: stS.bg, color: stS.color, border: `1px solid ${stS.border}`, letterSpacing: 0.5, textTransform: "uppercase" }}>{st}</span></div>
-                            <div style={{ textAlign: "center", fontSize: 11, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>{formatTime(t.actual_seconds)}</div>
+                            <div style={{ textAlign: "center", fontSize: 11, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>{formatTime(getDisplaySeconds(t))}</div>
                           </div>
                         );
                       })}
@@ -824,10 +790,11 @@ export default function App() {
 
 // ─── Task Card ────────────────────────────────────────────────────
 function TaskCard({ task, catColor, onStart, onPause, onFinish, onDelete, getWeeklyData, sessions, updateSessionNote }) {
+  const displaySec = getDisplaySeconds(task);
   const status = getStatus(task); const ss = getStatusStyle(status);
   const expectedSec = task.expected_minutes * 60;
-  const pct = expectedSec > 0 ? Math.min((task.actual_seconds / expectedSec) * 100, 100) : 0;
-  const overTime = task.actual_seconds > expectedSec;
+  const pct = expectedSec > 0 ? Math.min((displaySec / expectedSec) * 100, 100) : 0;
+  const overTime = displaySec > expectedSec;
   const pr = PRIORITY_CONFIG[task.priority] || PRIORITY_CONFIG.Medium;
   const [showSessions, setShowSessions] = useState(false);
   const weeklyInfo = task.linked_to_weekly && task.weekly_goal_name ? getWeeklyData(task.weekly_goal_name) : null;
@@ -856,7 +823,7 @@ function TaskCard({ task, catColor, onStart, onPause, onFinish, onDelete, getWee
           </div>
         </div>
         <div style={{ fontSize: 18, fontWeight: 700, minWidth: 75, textAlign: "right", color: overTime ? "#f87171" : "#00C896", fontVariantNumeric: "tabular-nums" }}>
-          {formatTime(task.actual_seconds)}
+          {formatTime(displaySec)}
         </div>
       </div>
 
@@ -875,7 +842,7 @@ function TaskCard({ task, catColor, onStart, onPause, onFinish, onDelete, getWee
       </div>
 
       <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-        {!task.running && <button onClick={() => onStart(task.id)} style={{ background: "#0A2818", border: "1px solid #00C896", borderRadius: 7, padding: "6px 14px", color: "#00C896", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>{task.actual_seconds > 0 ? "▶ Resume" : "▶ Start"}</button>}
+        {!task.running && <button onClick={() => onStart(task.id)} style={{ background: "#0A2818", border: "1px solid #00C896", borderRadius: 7, padding: "6px 14px", color: "#00C896", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>{displaySec > 0 ? "▶ Resume" : "▶ Start"}</button>}
         {task.running && <button onClick={() => onPause(task.id)} style={{ background: "#0A1A2A", border: "1px solid #4F9DFF", borderRadius: 7, padding: "6px 14px", color: "#4F9DFF", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>⏸ Pause</button>}
         <button onClick={() => onFinish(task.id)} style={{ background: "#0A1A0A", border: "1px solid #4ade80", borderRadius: 7, padding: "6px 14px", color: "#4ade80", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>✓ Finish</button>
         {sessions.length > 0 && <button onClick={() => setShowSessions(!showSessions)} style={{ background: "transparent", border: "1px solid #1E293B", borderRadius: 7, padding: "6px 12px", color: "#475569", fontSize: 10, fontFamily: "inherit", cursor: "pointer" }}>{showSessions ? "▲ Hide" : `▼ ${sessions.length} session${sessions.length !== 1 ? "s" : ""}`}</button>}
