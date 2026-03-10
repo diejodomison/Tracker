@@ -1,5 +1,34 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
+// ══════════════════════════════════════════════════════════════════
+// ▸▸▸  SUPABASE CONFIG — Replace these with your actual values  ◂◂◂
+// ══════════════════════════════════════════════════════════════════
+const SUPABASE_URL = "https://bkdfbouefcnkowrrcqgp.supabase.co";
+const SUPABASE_KEY = "sb_publishable_UiHlPSHypA2_yg47wOmemg_udwAgoLx";
+// ══════════════════════════════════════════════════════════════════
+
+const SUPA = {
+  headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+  url: (table, query = "") => `${SUPABASE_URL}/rest/v1/${table}${query ? "?" + query : ""}`,
+};
+
+async function supaFetch(table, query = "") {
+  const r = await fetch(SUPA.url(table, query), { headers: SUPA.headers });
+  return r.ok ? r.json() : [];
+}
+async function supaInsert(table, data) {
+  const r = await fetch(SUPA.url(table), { method: "POST", headers: SUPA.headers, body: JSON.stringify(data) });
+  return r.ok ? r.json() : [];
+}
+async function supaUpdate(table, id, data) {
+  const r = await fetch(SUPA.url(table, `id=eq.${id}`), { method: "PATCH", headers: SUPA.headers, body: JSON.stringify(data) });
+  return r.ok ? r.json() : [];
+}
+async function supaDelete(table, id) {
+  await fetch(SUPA.url(table, `id=eq.${id}`), { method: "DELETE", headers: SUPA.headers });
+}
+
+// ─── Defaults (used as fallback if Supabase not configured) ──────
 const DEFAULT_CATEGORIES = [
   { name: "Lead Gen & Data", color: "#00C896" },
   { name: "Cold Email Campaigns", color: "#4F9DFF" },
@@ -31,13 +60,17 @@ const PRESET_COLORS = [
 
 const ADD_NEW_CAT = "__ADD_NEW__";
 
-function getStatus(task) {
-  if (task.finished) return task.actualSeconds <= task.expectedMinutes * 60 ? "Finished Early" : "Finished Late";
-  if (task.running) return "In Progress";
-  if (task.actualSeconds > 0) return "Paused";
-  return "Pending";
+function isSupabaseConfigured() {
+  return SUPABASE_URL && !SUPABASE_URL.includes("YOUR_PROJECT_ID") && SUPABASE_KEY && !SUPABASE_KEY.includes("YOUR_ANON");
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────
+function getStatus(task) {
+  if (task.finished) return task.actual_seconds <= task.expected_minutes * 60 ? "Finished Early" : "Finished Late";
+  if (task.running) return "In Progress";
+  if (task.actual_seconds > 0) return "Paused";
+  return "Pending";
+}
 function getStatusStyle(status) {
   const m = {
     "In Progress": { bg: "#1a3a2a", color: "#00C896", border: "#00C896" },
@@ -47,7 +80,6 @@ function getStatusStyle(status) {
   };
   return m[status] || { bg: "#1a1a2a", color: "#94A3B8", border: "#334155" };
 }
-
 function formatTime(seconds) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -56,19 +88,16 @@ function formatTime(seconds) {
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
 }
-
 function formatClock(date) {
   if (!date) return "";
   return new Date(date).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
 }
-
 function formatDate(date) {
   if (!date) return "";
   return new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-let taskId = 1;
-
+// ─── Toggle ───────────────────────────────────────────────────────
 function Toggle({ checked, onChange, label }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => onChange(!checked)}>
@@ -80,6 +109,7 @@ function Toggle({ checked, onChange, label }) {
   );
 }
 
+// ─── Ring ─────────────────────────────────────────────────────────
 function Ring({ percent, size = 54, sw = 4, color = "#A78BFA" }) {
   const r = (size - sw) / 2;
   const c = 2 * Math.PI * r;
@@ -93,56 +123,33 @@ function Ring({ percent, size = 54, sw = 4, color = "#A78BFA" }) {
   );
 }
 
-// ─── Weekly Goal Suggestion Dropdown ──────────────────────────────
+// ─── Weekly Goal Input ────────────────────────────────────────────
 function WeeklyGoalInput({ value, onChange, suggestions }) {
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(false);
   const ref = useRef(null);
-
   const filtered = suggestions.filter(s => s.toLowerCase().includes(value.toLowerCase()));
   const showDropdown = focused && filtered.length > 0;
-
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
-
   return (
     <div ref={ref} style={{ position: "relative" }}>
-      <input
-        value={value}
-        onChange={e => { onChange(e.target.value); setOpen(true); }}
+      <input value={value} onChange={e => { onChange(e.target.value); setOpen(true); }}
         onFocus={() => { setFocused(true); setOpen(true); }}
         onBlur={() => setTimeout(() => setFocused(false), 150)}
         placeholder="e.g. Send 500 cold emails this week"
-        style={{
-          width: "100%", background: "#0A0F1A", border: "1px solid #1E293B",
-          borderRadius: 8, padding: "10px 14px", color: "#E2E8F0",
-          fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", outline: "none",
-        }}
-      />
+        style={{ width: "100%", background: "#0A0F1A", border: "1px solid #1E293B", borderRadius: 8, padding: "10px 14px", color: "#E2E8F0", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", outline: "none" }} />
       {showDropdown && open && (
-        <div style={{
-          position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50,
-          background: "#0D1117", border: "1px solid #1E293B", borderRadius: 8,
-          marginTop: 4, maxHeight: 180, overflowY: "auto",
-          boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
-        }}>
-          <div style={{ padding: "6px 10px", fontSize: 9, color: "#475569", letterSpacing: 2, textTransform: "uppercase", borderBottom: "1px solid #1E293B" }}>
-            Existing Weekly Goals
-          </div>
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#0D1117", border: "1px solid #1E293B", borderRadius: 8, marginTop: 4, maxHeight: 180, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+          <div style={{ padding: "6px 10px", fontSize: 9, color: "#475569", letterSpacing: 2, textTransform: "uppercase", borderBottom: "1px solid #1E293B" }}>Existing Weekly Goals</div>
           {filtered.map(s => (
-            <div key={s}
-              onMouseDown={() => { onChange(s); setOpen(false); }}
-              style={{
-                padding: "9px 14px", cursor: "pointer", fontSize: 12, color: "#E2E8F0",
-                borderBottom: "1px solid #1E293B11",
-                background: value === s ? "#1a1a2e" : "transparent",
-              }}
+            <div key={s} onMouseDown={() => { onChange(s); setOpen(false); }}
+              style={{ padding: "9px 14px", cursor: "pointer", fontSize: 12, color: "#E2E8F0", borderBottom: "1px solid #1E293B11", background: value === s ? "#1a1a2e" : "transparent" }}
               onMouseEnter={e => e.currentTarget.style.background = "#1a1a2e"}
-              onMouseLeave={e => e.currentTarget.style.background = value === s ? "#1a1a2e" : "transparent"}
-            >
+              onMouseLeave={e => e.currentTarget.style.background = value === s ? "#1a1a2e" : "transparent"}>
               <span style={{ color: "#A78BFA", marginRight: 8 }}>◎</span>{s}
             </div>
           ))}
@@ -155,15 +162,20 @@ function WeeklyGoalInput({ value, onChange, suggestions }) {
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════════
 export default function App() {
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [tasks, setTasks] = useState([]);
+  const [sessions, setSessions] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [activeView, setActiveView] = useState("daily");
   const [now, setNow] = useState(new Date());
+  const [loading, setLoading] = useState(true);
+  const [dbConnected, setDbConnected] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("");
 
-  // Inline new category state
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCatName, setNewCatName] = useState("");
   const [newCatColor, setNewCatColor] = useState(PRESET_COLORS[0]);
@@ -175,104 +187,206 @@ export default function App() {
     weeklyGoalName: "", contributionPercent: "",
   });
 
+  const [expandedGoal, setExpandedGoal] = useState(null);
+  const supaEnabled = isSupabaseConfigured();
+
+  // ── Load data from Supabase on mount ──
+  useEffect(() => {
+    async function loadData() {
+      if (!supaEnabled) {
+        setLoading(false);
+        setSyncStatus("offline");
+        return;
+      }
+      try {
+        const [cats, tks, sess] = await Promise.all([
+          supaFetch("categories", "order=id.asc"),
+          supaFetch("tasks", "order=id.asc"),
+          supaFetch("sessions", "order=id.asc"),
+        ]);
+        if (cats.length > 0) setCategories(cats.map(c => ({ id: c.id, name: c.name, color: c.color })));
+        setTasks(tks.map(t => ({ ...t, _sessionStart: t.running ? new Date().toISOString() : null })));
+        setSessions(sess);
+        setDbConnected(true);
+        setSyncStatus("connected");
+      } catch (e) {
+        console.error("Supabase load error:", e);
+        setSyncStatus("error");
+      }
+      setLoading(false);
+    }
+    loadData();
+  }, []);
+
+  // ── Realtime polling (every 5s for other users' changes) ──
+  useEffect(() => {
+    if (!supaEnabled || !dbConnected) return;
+    const interval = setInterval(async () => {
+      try {
+        const [tks, sess] = await Promise.all([
+          supaFetch("tasks", "order=id.asc"),
+          supaFetch("sessions", "order=id.asc"),
+        ]);
+        setTasks(prev => {
+          // Merge: keep local running state for tasks we're actively timing
+          return tks.map(remote => {
+            const local = prev.find(l => l.id === remote.id);
+            if (local && local._sessionStart && local.running) {
+              return { ...remote, running: true, _sessionStart: local._sessionStart };
+            }
+            return { ...remote, _sessionStart: null };
+          });
+        });
+        setSessions(sess);
+      } catch (e) { /* silent fail on poll */ }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [supaEnabled, dbConnected]);
+
+  // ── Timer tick ──
   useEffect(() => {
     const tick = setInterval(() => {
       setNow(new Date());
-      setTasks(prev => prev.map(t => t.running ? { ...t, actualSeconds: t.actualSeconds + 1 } : t));
+      setTasks(prev => prev.map(t => t.running ? { ...t, actual_seconds: t.actual_seconds + 1 } : t));
     }, 1000);
     return () => clearInterval(tick);
   }, []);
 
+  // ── Save running task's actual_seconds to Supabase every 15s ──
+  useEffect(() => {
+    if (!supaEnabled || !dbConnected) return;
+    const interval = setInterval(() => {
+      tasks.forEach(t => {
+        if (t.running && t.id) {
+          supaUpdate("tasks", t.id, { actual_seconds: t.actual_seconds });
+        }
+      });
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [tasks, supaEnabled, dbConnected]);
+
   const getCatColor = (name) => (categories.find(c => c.name === name) || {}).color || "#94A3B8";
 
-  const addCategory = () => {
+  // ── Category CRUD ──
+  const addCategory = async () => {
     const n = newCatName.trim();
     if (!n || categories.find(c => c.name === n)) return;
     const col = customHex.match(/^#[0-9a-fA-F]{6}$/) ? customHex : newCatColor;
-    setCategories(prev => [...prev, { name: n, color: col }]);
+    const newCat = { name: n, color: col };
+    if (supaEnabled) {
+      const res = await supaInsert("categories", newCat);
+      if (res.length > 0) setCategories(prev => [...prev, { id: res[0].id, name: res[0].name, color: res[0].color }]);
+    } else {
+      setCategories(prev => [...prev, newCat]);
+    }
     setNewTask(t => ({ ...t, category: n }));
     setNewCatName(""); setCustomHex(""); setAddingCategory(false);
   };
 
   const handleCategoryChange = (val) => {
-    if (val === ADD_NEW_CAT) {
-      setAddingCategory(true);
-    } else {
-      setNewTask(t => ({ ...t, category: val }));
-      setAddingCategory(false);
-    }
+    if (val === ADD_NEW_CAT) { setAddingCategory(true); }
+    else { setNewTask(t => ({ ...t, category: val })); setAddingCategory(false); }
   };
 
-  const addTask = () => {
+  // ── Task CRUD ──
+  const addTask = async () => {
     if (!newTask.name.trim()) return;
     const rawContrib = newTask.contributionPercent;
     const contrib = rawContrib === "" || rawContrib === undefined ? 0 : Math.min(100, Math.max(0, Number(rawContrib) || 0));
-    const task = {
-      id: taskId++, name: newTask.name, category: newTask.category,
-      expectedMinutes: Number(newTask.expectedMinutes) || 30, notes: newTask.notes,
-      priority: newTask.priority, actualSeconds: 0, running: false, finished: false,
-      startedAt: null, finishedAt: null, createdAt: new Date().toISOString(),
-      linkedToWeekly: newTask.linkedToWeekly,
-      weeklyGoalName: newTask.linkedToWeekly ? newTask.weeklyGoalName.trim() : "",
-      contributionPercent: newTask.linkedToWeekly ? contrib : 0,
-      sessions: [], _sessionStart: null,
+    const taskData = {
+      name: newTask.name, category: newTask.category,
+      expected_minutes: Number(newTask.expectedMinutes) || 30, notes: newTask.notes,
+      priority: newTask.priority, actual_seconds: 0, running: false, finished: false,
+      started_at: null, finished_at: null,
+      linked_to_weekly: newTask.linkedToWeekly,
+      weekly_goal_name: newTask.linkedToWeekly ? newTask.weeklyGoalName.trim() : "",
+      contribution_percent: newTask.linkedToWeekly ? contrib : 0,
     };
-    setTasks(prev => [...prev, task]);
+    if (supaEnabled) {
+      const res = await supaInsert("tasks", taskData);
+      if (res.length > 0) setTasks(prev => [...prev, { ...res[0], _sessionStart: null }]);
+    } else {
+      setTasks(prev => [...prev, { ...taskData, id: Date.now(), created_at: new Date().toISOString(), _sessionStart: null }]);
+    }
     setNewTask({ name: "", category: categories[0]?.name || "", expectedMinutes: 30, notes: "", priority: "Medium", linkedToWeekly: false, weeklyGoalName: "", contributionPercent: "" });
     setShowForm(false); setAddingCategory(false);
   };
 
-  const startTask = (id) => {
+  const startTask = async (id) => {
+    const nowISO = new Date().toISOString();
     setTasks(prev => prev.map(t => {
-      if (t.id === id) return { ...t, running: true, startedAt: t.startedAt || new Date().toISOString(), _sessionStart: new Date().toISOString() };
-      if (t.running) {
-        const dur = t._sessionStart ? Math.round((Date.now() - new Date(t._sessionStart).getTime()) / 1000) : 0;
-        const sess = t._sessionStart ? [...t.sessions, { startedAt: t._sessionStart, stoppedAt: new Date().toISOString(), durationSec: dur, note: "" }] : t.sessions;
-        return { ...t, running: false, sessions: sess, _sessionStart: null };
-      }
+      if (t.id === id) return { ...t, running: true, started_at: t.started_at || nowISO, _sessionStart: nowISO };
+      if (t.running) return { ...t, running: false, _sessionStart: null };
       return t;
     }));
+    if (supaEnabled) {
+      // Pause any running task
+      const running = tasks.find(t => t.running && t.id !== id);
+      if (running) {
+        await supaUpdate("tasks", running.id, { running: false, actual_seconds: running.actual_seconds });
+        if (running._sessionStart) {
+          const dur = Math.round((Date.now() - new Date(running._sessionStart).getTime()) / 1000);
+          await supaInsert("sessions", { task_id: running.id, started_at: running._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
+          setSessions(prev => [...prev, { task_id: running.id, started_at: running._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" }]);
+        }
+      }
+      const task = tasks.find(t => t.id === id);
+      await supaUpdate("tasks", id, { running: true, started_at: task?.started_at || nowISO });
+    }
   };
 
-  const pauseTask = (id) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      const dur = t._sessionStart ? Math.round((Date.now() - new Date(t._sessionStart).getTime()) / 1000) : 0;
-      const sess = t._sessionStart ? [...t.sessions, { startedAt: t._sessionStart, stoppedAt: new Date().toISOString(), durationSec: dur, note: "" }] : t.sessions;
-      return { ...t, running: false, sessions: sess, _sessionStart: null };
-    }));
+  const pauseTask = async (id) => {
+    const nowISO = new Date().toISOString();
+    const task = tasks.find(t => t.id === id);
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, running: false, _sessionStart: null } : t));
+    if (supaEnabled && task) {
+      await supaUpdate("tasks", id, { running: false, actual_seconds: task.actual_seconds });
+      if (task._sessionStart) {
+        const dur = Math.round((Date.now() - new Date(task._sessionStart).getTime()) / 1000);
+        const res = await supaInsert("sessions", { task_id: id, started_at: task._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
+        if (res.length > 0) setSessions(prev => [...prev, res[0]]);
+      }
+    }
   };
 
-  const finishTask = (id) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      const dur = t._sessionStart ? Math.round((Date.now() - new Date(t._sessionStart).getTime()) / 1000) : 0;
-      const sess = t._sessionStart ? [...t.sessions, { startedAt: t._sessionStart, stoppedAt: new Date().toISOString(), durationSec: dur, note: "" }] : t.sessions;
-      return { ...t, running: false, finished: true, finishedAt: new Date().toISOString(), sessions: sess, _sessionStart: null };
-    }));
+  const finishTask = async (id) => {
+    const nowISO = new Date().toISOString();
+    const task = tasks.find(t => t.id === id);
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, running: false, finished: true, finished_at: nowISO, _sessionStart: null } : t));
+    if (supaEnabled && task) {
+      await supaUpdate("tasks", id, { running: false, finished: true, finished_at: nowISO, actual_seconds: task.actual_seconds });
+      if (task._sessionStart) {
+        const dur = Math.round((Date.now() - new Date(task._sessionStart).getTime()) / 1000);
+        const res = await supaInsert("sessions", { task_id: id, started_at: task._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
+        if (res.length > 0) setSessions(prev => [...prev, res[0]]);
+      }
+    }
   };
 
-  const deleteTask = (id) => setTasks(prev => prev.filter(t => t.id !== id));
-
-  const updateSessionNote = (tid, sidx, note) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id !== tid) return t;
-      const sess = [...t.sessions]; sess[sidx] = { ...sess[sidx], note };
-      return { ...t, sessions: sess };
-    }));
+  const deleteTask = async (id) => {
+    setTasks(prev => prev.filter(t => t.id !== id));
+    setSessions(prev => prev.filter(s => s.task_id !== id));
+    if (supaEnabled) await supaDelete("tasks", id);
   };
 
-  const weeklyGoalNames = [...new Set(tasks.filter(t => t.linkedToWeekly && t.weeklyGoalName).map(t => t.weeklyGoalName))];
+  const updateSessionNote = async (sessionId, note) => {
+    setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, note } : s));
+    if (supaEnabled && sessionId) await supaUpdate("sessions", sessionId, { note });
+  };
+
+  // ── Computed ──
+  const getTaskSessions = (taskId) => sessions.filter(s => s.task_id === taskId);
+  const weeklyGoalNames = [...new Set(tasks.filter(t => t.linked_to_weekly && t.weekly_goal_name).map(t => t.weekly_goal_name))];
   function getWeeklyData(goalName) {
-    const linked = tasks.filter(t => t.weeklyGoalName === goalName);
-    const percent = linked.filter(t => t.finished).reduce((s, t) => s + t.contributionPercent, 0);
+    const linked = tasks.filter(t => t.weekly_goal_name === goalName);
+    const percent = linked.filter(t => t.finished).reduce((s, t) => s + t.contribution_percent, 0);
     return { linked, percent: Math.min(percent, 100) };
   }
 
-  const totalWorked = tasks.reduce((s, t) => s + t.actualSeconds, 0);
+  const totalWorked = tasks.reduce((s, t) => s + t.actual_seconds, 0);
   const catBreakdown = categories.map(c => ({
     cat: c.name, color: c.color,
-    seconds: tasks.filter(t => t.category === c.name).reduce((s, t) => s + t.actualSeconds, 0),
+    seconds: tasks.filter(t => t.category === c.name).reduce((s, t) => s + t.actual_seconds, 0),
   })).filter(c => c.seconds > 0).sort((a, b) => b.seconds - a.seconds);
   const pending = tasks.filter(t => !t.finished);
   const finished = tasks.filter(t => t.finished);
@@ -280,7 +394,16 @@ export default function App() {
   const inputS = { width: "100%", background: "#0A0F1A", border: "1px solid #1E293B", borderRadius: 8, padding: "10px 14px", color: "#E2E8F0", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", outline: "none" };
   const labelS = { fontSize: 10, color: "#475569", letterSpacing: 2, textTransform: "uppercase", display: "block", marginBottom: 8 };
 
-  const [expandedGoal, setExpandedGoal] = useState(null);
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#080C14", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'JetBrains Mono',monospace" }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ width: 12, height: 12, borderRadius: "50%", background: "#00C896", boxShadow: "0 0 20px #00C896", margin: "0 auto 16px", animation: "pulse 1s infinite" }} />
+          <div style={{ color: "#00C896", fontSize: 12, letterSpacing: 3 }}>LOADING PARALEAGLE...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: "#080C14", color: "#E2E8F0", fontFamily: "'JetBrains Mono','Fira Code',monospace", padding: 0 }}>
@@ -294,8 +417,13 @@ export default function App() {
       }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#00C896", boxShadow: "0 0 8px #00C896", animation: "pulse 2s infinite" }} />
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: dbConnected ? "#00C896" : "#F59E0B", boxShadow: `0 0 8px ${dbConnected ? "#00C896" : "#F59E0B"}`, animation: "pulse 2s infinite" }} />
             <span style={{ fontSize: 11, color: "#00C896", letterSpacing: 4, textTransform: "uppercase", fontWeight: 600 }}>Paraleagle</span>
+            {supaEnabled && (
+              <span style={{ fontSize: 8, padding: "2px 6px", borderRadius: 10, background: dbConnected ? "#1a3a2a" : "#2a2a1a", color: dbConnected ? "#00C896" : "#F59E0B", border: `1px solid ${dbConnected ? "#00C89644" : "#F59E0B44"}`, letterSpacing: 1 }}>
+                {dbConnected ? "SYNCED" : "OFFLINE"}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 19, fontWeight: 700, marginTop: 3, color: "#F1F5F9", letterSpacing: -0.5 }}>Work Tracker</div>
         </div>
@@ -320,12 +448,18 @@ export default function App() {
         </div>
       </div>
 
+      {/* Supabase not configured banner */}
+      {!supaEnabled && (
+        <div style={{ background: "#2a2a1a", borderBottom: "1px solid #F59E0B44", padding: "10px 28px", fontSize: 11, color: "#F59E0B", display: "flex", alignItems: "center", gap: 8 }}>
+          <span>⚠</span>
+          <span>Supabase not configured — data is local only and will reset on refresh. Add your Supabase URL and key in App.jsx to enable shared persistent storage.</span>
+        </div>
+      )}
+
       <div style={{ maxWidth: 1020, margin: "0 auto", padding: "24px 20px" }}>
 
         {/* ═══════════ DAILY VIEW ═══════════ */}
         {activeView === "daily" && (<>
-
-          {/* Stats */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
             {[
               { label: "Total Tasks", value: tasks.length, color: "#4F9DFF" },
@@ -340,7 +474,6 @@ export default function App() {
             ))}
           </div>
 
-          {/* Category Breakdown */}
           {catBreakdown.length > 0 && (
             <div style={{ background: "#0D1117", border: "1px solid #1E293B", borderRadius: 12, padding: "16px 20px", marginBottom: 24 }}>
               <div style={{ ...labelS, marginBottom: 12 }}>Time by Category</div>
@@ -363,7 +496,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Add Task Button */}
           <div style={{ marginBottom: 20 }}>
             <button onClick={() => { setShowForm(!showForm); setAddingCategory(false); }} style={{
               background: showForm ? "#1E293B" : "linear-gradient(135deg, #00C896, #4F9DFF)",
@@ -374,7 +506,6 @@ export default function App() {
             </button>
           </div>
 
-          {/* ── Add Task Form ── */}
           {showForm && (
             <div style={{ background: "#0D1117", border: "1px solid #1E293B", borderRadius: 14, padding: "22px", marginBottom: 24 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 14 }}>
@@ -385,18 +516,10 @@ export default function App() {
                 </div>
                 <div>
                   <label style={labelS}>Category</label>
-                  <select
-                    value={addingCategory ? ADD_NEW_CAT : newTask.category}
-                    onChange={e => handleCategoryChange(e.target.value)}
-                    style={inputS}
-                  >
-                    {categories.map(c => (
-                      <option key={c.name} value={c.name} style={{ color: "#E2E8F0" }}>
-                        {c.name}
-                      </option>
-                    ))}
-                    <option disabled style={{ color: "#1E293B" }}>───────────────</option>
-                    <option value={ADD_NEW_CAT} style={{ color: "#00C896" }}>+ Add New Category</option>
+                  <select value={addingCategory ? ADD_NEW_CAT : newTask.category} onChange={e => handleCategoryChange(e.target.value)} style={inputS}>
+                    {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                    <option disabled>───────────────</option>
+                    <option value={ADD_NEW_CAT}>+ Add New Category</option>
                   </select>
                 </div>
                 <div>
@@ -407,7 +530,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ── Inline New Category Creator ── */}
               {addingCategory && (
                 <div style={{ background: "#0A0F1A", border: "1px solid #00C89644", borderRadius: 10, padding: "16px", marginBottom: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -417,14 +539,11 @@ export default function App() {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, marginBottom: 12, alignItems: "end" }}>
                     <div>
                       <label style={labelS}>Name</label>
-                      <input value={newCatName} onChange={e => setNewCatName(e.target.value)}
-                        onKeyDown={e => e.key === "Enter" && addCategory()}
-                        placeholder="e.g. Client Calls" style={inputS} autoFocus />
+                      <input value={newCatName} onChange={e => setNewCatName(e.target.value)} onKeyDown={e => e.key === "Enter" && addCategory()} placeholder="e.g. Client Calls" style={inputS} autoFocus />
                     </div>
                     <div>
                       <label style={labelS}>Custom Hex</label>
-                      <input value={customHex} onChange={e => setCustomHex(e.target.value)}
-                        placeholder="#FF5733" style={{ ...inputS, width: 110 }} />
+                      <input value={customHex} onChange={e => setCustomHex(e.target.value)} placeholder="#FF5733" style={{ ...inputS, width: 110 }} />
                     </div>
                   </div>
                   <div style={{ marginBottom: 12 }}>
@@ -432,11 +551,7 @@ export default function App() {
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                       {PRESET_COLORS.map(c => (
                         <div key={c} onClick={() => { setNewCatColor(c); setCustomHex(""); }}
-                          style={{
-                            width: 24, height: 24, borderRadius: 5, background: c, cursor: "pointer",
-                            border: newCatColor === c && !customHex ? "2px solid #fff" : "2px solid transparent",
-                            transition: "border 0.15s",
-                          }} />
+                          style={{ width: 24, height: 24, borderRadius: 5, background: c, cursor: "pointer", border: newCatColor === c && !customHex ? "2px solid #fff" : "2px solid transparent" }} />
                       ))}
                     </div>
                   </div>
@@ -446,74 +561,52 @@ export default function App() {
                       <span style={{ fontSize: 12, color: customHex.match(/^#[0-9a-fA-F]{6}$/) ? customHex : newCatColor }}>● {newCatName.trim()}</span>
                     </div>
                   )}
-                  <button onClick={addCategory} style={{
-                    background: "linear-gradient(135deg, #00C896, #4F9DFF)",
-                    border: "none", borderRadius: 7, padding: "8px 20px",
-                    color: "#fff", fontSize: 12, fontFamily: "inherit", fontWeight: 600, cursor: "pointer",
-                  }}>Create Category</button>
+                  <button onClick={addCategory} style={{ background: "linear-gradient(135deg, #00C896, #4F9DFF)", border: "none", borderRadius: 7, padding: "8px 20px", color: "#fff", fontSize: 12, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>Create Category</button>
                 </div>
               )}
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 14, marginBottom: 14 }}>
                 <div>
                   <label style={labelS}>Expected Time (mins)</label>
-                  <input type="number" value={newTask.expectedMinutes}
-                    onChange={e => setNewTask({ ...newTask, expectedMinutes: e.target.value })} style={inputS} />
+                  <input type="number" value={newTask.expectedMinutes} onChange={e => setNewTask({ ...newTask, expectedMinutes: e.target.value })} style={inputS} />
                 </div>
                 <div>
                   <label style={labelS}>Notes (optional)</label>
-                  <input value={newTask.notes} onChange={e => setNewTask({ ...newTask, notes: e.target.value })}
-                    placeholder="Any context..." style={inputS} />
+                  <input value={newTask.notes} onChange={e => setNewTask({ ...newTask, notes: e.target.value })} placeholder="Any context..." style={inputS} />
                 </div>
               </div>
 
-              {/* Weekly Link */}
               <div style={{ background: "#0A0F1A", border: "1px solid #1E293B", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
-                <Toggle checked={newTask.linkedToWeekly}
-                  onChange={val => setNewTask({ ...newTask, linkedToWeekly: val })}
-                  label="Link to a Weekly To-Do" />
+                <Toggle checked={newTask.linkedToWeekly} onChange={val => setNewTask({ ...newTask, linkedToWeekly: val })} label="Link to a Weekly To-Do" />
                 {newTask.linkedToWeekly && (
                   <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14 }}>
                     <div>
                       <label style={labelS}>Weekly Goal Name</label>
-                      <WeeklyGoalInput
-                        value={newTask.weeklyGoalName}
-                        onChange={v => setNewTask({ ...newTask, weeklyGoalName: v })}
-                        suggestions={weeklyGoalNames}
-                      />
+                      <WeeklyGoalInput value={newTask.weeklyGoalName} onChange={v => setNewTask({ ...newTask, weeklyGoalName: v })} suggestions={weeklyGoalNames} />
                     </div>
                     <div>
                       <label style={labelS}>Contribution %</label>
-                      <input type="number" min="0" max="100"
-                        value={newTask.contributionPercent}
-                        onChange={e => setNewTask({ ...newTask, contributionPercent: e.target.value })}
-                        placeholder="e.g. 20" style={inputS} />
+                      <input type="number" min="0" max="100" value={newTask.contributionPercent} onChange={e => setNewTask({ ...newTask, contributionPercent: e.target.value })} placeholder="e.g. 20" style={inputS} />
                     </div>
                   </div>
                 )}
               </div>
 
-              <button onClick={addTask} style={{
-                background: "linear-gradient(135deg, #00C896, #4F9DFF)",
-                border: "none", borderRadius: 8, padding: "10px 26px",
-                color: "#fff", fontSize: 13, fontFamily: "inherit", fontWeight: 600, cursor: "pointer",
-              }}>Add Task</button>
+              <button onClick={addTask} style={{ background: "linear-gradient(135deg, #00C896, #4F9DFF)", border: "none", borderRadius: 8, padding: "10px 26px", color: "#fff", fontSize: 13, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>Add Task</button>
             </div>
           )}
 
-          {/* ── Pending Tasks ── */}
           {pending.length > 0 && (
             <div style={{ marginBottom: 28 }}>
               <div style={{ ...labelS, letterSpacing: 3, marginBottom: 14 }}>To Do & In Progress — {pending.length} tasks</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {pending.map(task => <TaskCard key={task.id} task={task} catColor={getCatColor(task.category)}
                   onStart={startTask} onPause={pauseTask} onFinish={finishTask} onDelete={deleteTask}
-                  getWeeklyData={getWeeklyData} updateSessionNote={updateSessionNote} />)}
+                  getWeeklyData={getWeeklyData} sessions={getTaskSessions(task.id)} updateSessionNote={updateSessionNote} />)}
               </div>
             </div>
           )}
 
-          {/* ── Finished Tasks ── */}
           {finished.length > 0 && (
             <div>
               <div style={{ ...labelS, letterSpacing: 3, marginBottom: 14 }}>Completed — {finished.length} tasks</div>
@@ -521,8 +614,9 @@ export default function App() {
                 {finished.map(task => {
                   const status = getStatus(task); const ss = getStatusStyle(status);
                   const catColor = getCatColor(task.category);
-                  const diff = task.actualSeconds - task.expectedMinutes * 60;
+                  const diff = task.actual_seconds - task.expected_minutes * 60;
                   const pr = PRIORITY_CONFIG[task.priority] || PRIORITY_CONFIG.Medium;
+                  const taskSessions = getTaskSessions(task.id);
                   return (
                     <div key={task.id} style={{ background: "#090D14", border: "1px solid #1E293B", borderLeft: `3px solid ${catColor}44`, borderRadius: 12, padding: "13px 18px", opacity: 0.75 }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -531,20 +625,18 @@ export default function App() {
                             <span style={{ fontSize: 12, color: pr.color }}>{pr.icon}</span>
                             <span style={{ fontSize: 13, color: "#94A3B8", textDecoration: "line-through" }}>{task.name}</span>
                             <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}`, letterSpacing: 0.5, textTransform: "uppercase" }}>{status}</span>
-                            {task.linkedToWeekly && task.weeklyGoalName && (
+                            {task.linked_to_weekly && task.weekly_goal_name && (
                               <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: "#1a1a2e44", color: "#A78BFA88", border: "1px solid #A78BFA22" }}>
-                                ✓ {task.weeklyGoalName} +{task.contributionPercent}%
+                                ✓ {task.weekly_goal_name} +{task.contribution_percent}%
                               </span>
                             )}
                           </div>
                           <div style={{ display: "flex", gap: 14, fontSize: 10, color: "#334155" }}>
                             <span style={{ color: catColor + "88" }}>● {task.category}</span>
-                            <span>Exp: {task.expectedMinutes}m</span>
-                            <span>Actual: {formatTime(task.actualSeconds)}</span>
-                            <span style={{ color: diff > 0 ? "#f87171" : "#4ade80" }}>
-                              {diff > 0 ? `+${formatTime(diff)} over` : `${formatTime(Math.abs(diff))} under`}
-                            </span>
-                            <span>{task.sessions.length} session{task.sessions.length !== 1 ? "s" : ""}</span>
+                            <span>Exp: {task.expected_minutes}m</span>
+                            <span>Actual: {formatTime(task.actual_seconds)}</span>
+                            <span style={{ color: diff > 0 ? "#f87171" : "#4ade80" }}>{diff > 0 ? `+${formatTime(diff)} over` : `${formatTime(Math.abs(diff))} under`}</span>
+                            <span>{taskSessions.length} session{taskSessions.length !== 1 ? "s" : ""}</span>
                           </div>
                         </div>
                         <button onClick={() => deleteTask(task.id)} style={{ background: "transparent", border: "none", color: "#334155", fontSize: 14, cursor: "pointer" }}>✕</button>
@@ -565,12 +657,12 @@ export default function App() {
           )}
         </>)}
 
-        {/* ═══════════ WEEKLY VIEW (Dashboard Only) ═══════════ */}
+        {/* ═══════════ WEEKLY VIEW ═══════════ */}
         {activeView === "weekly" && (<>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 24 }}>
             {[
               { label: "Weekly Goals", value: weeklyGoalNames.length, color: "#A78BFA" },
-              { label: "Linked Tasks", value: tasks.filter(t => t.linkedToWeekly).length, color: "#4F9DFF" },
+              { label: "Linked Tasks", value: tasks.filter(t => t.linked_to_weekly).length, color: "#4F9DFF" },
               { label: "Avg Completion", value: weeklyGoalNames.length > 0 ? Math.round(weeklyGoalNames.reduce((s, g) => s + getWeeklyData(g).percent, 0) / weeklyGoalNames.length) + "%" : "—", color: "#00C896" },
             ].map(s => (
               <div key={s.label} style={{ background: "#0D1117", border: "1px solid #1E293B", borderRadius: 12, padding: "13px 16px" }}>
@@ -591,15 +683,11 @@ export default function App() {
                 const finishedLinked = linked.filter(t => t.finished);
                 const goalCats = [...new Set(linked.map(t => t.category))];
                 const isExpanded = expandedGoal === goalName;
-                const allSessions = linked.flatMap(t => t.sessions.map(s => ({ ...s, taskName: t.name, taskId: t.id, taskCategory: t.category })));
-                allSessions.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+                const allSessions = linked.flatMap(t => getTaskSessions(t.id).map(s => ({ ...s, taskName: t.name, taskCategory: t.category })));
+                allSessions.sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
 
                 return (
-                  <div key={goalName} style={{
-                    background: "#0D1117", border: `1px solid ${percent >= 100 ? "#4ade8044" : "#1E293B"}`,
-                    borderLeft: `3px solid ${percent >= 100 ? "#4ade80" : "#A78BFA"}`,
-                    borderRadius: 14, padding: "20px 22px",
-                  }}>
+                  <div key={goalName} style={{ background: "#0D1117", border: `1px solid ${percent >= 100 ? "#4ade8044" : "#1E293B"}`, borderLeft: `3px solid ${percent >= 100 ? "#4ade80" : "#A78BFA"}`, borderRadius: 14, padding: "20px 22px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 5 }}>
@@ -622,12 +710,10 @@ export default function App() {
                         <span style={{ position: "absolute", fontSize: 12, fontWeight: 700, color: percent >= 100 ? "#4ade80" : "#A78BFA" }}>{Math.round(percent)}%</span>
                       </div>
                     </div>
-
                     <div style={{ height: 5, background: "#1E293B", borderRadius: 6, marginBottom: 14 }}>
                       <div style={{ height: "100%", borderRadius: 6, width: `${percent}%`, background: percent >= 100 ? "linear-gradient(90deg, #4ade80, #00C896)" : "linear-gradient(90deg, #A78BFA, #4F9DFF)", transition: "width 0.5s ease" }} />
                     </div>
 
-                    {/* Task Table */}
                     <div style={{ background: "#0A0F1A", borderRadius: 10, border: "1px solid #1E293B", overflow: "hidden", marginBottom: 10 }}>
                       <div style={{ display: "grid", gridTemplateColumns: "2fr 0.8fr 0.8fr 1fr 0.8fr", padding: "9px 14px", borderBottom: "1px solid #1E293B" }}>
                         {["Daily Task", "Priority", "Contrib %", "Status", "Time"].map(h => (
@@ -641,18 +727,15 @@ export default function App() {
                           <div key={t.id} style={{ display: "grid", gridTemplateColumns: "2fr 0.8fr 0.8fr 1fr 0.8fr", padding: "9px 14px", borderBottom: "1px solid #1E293B11", alignItems: "center" }}>
                             <span style={{ fontSize: 12, color: t.finished ? "#64748B" : "#E2E8F0", textDecoration: t.finished ? "line-through" : "none" }}>{t.name}</span>
                             <div style={{ textAlign: "center" }}><span style={{ fontSize: 10, color: pr.color }}>{pr.icon} {t.priority}</span></div>
-                            <div style={{ textAlign: "center" }}><span style={{ fontSize: 12, fontWeight: 700, color: "#A78BFA" }}>{t.contributionPercent}%</span></div>
+                            <div style={{ textAlign: "center" }}><span style={{ fontSize: 12, fontWeight: 700, color: "#A78BFA" }}>{t.contribution_percent}%</span></div>
                             <div style={{ textAlign: "center" }}><span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: stS.bg, color: stS.color, border: `1px solid ${stS.border}`, letterSpacing: 0.5, textTransform: "uppercase" }}>{st}</span></div>
-                            <div style={{ textAlign: "center", fontSize: 11, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>{formatTime(t.actualSeconds)}</div>
+                            <div style={{ textAlign: "center", fontSize: 11, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>{formatTime(t.actual_seconds)}</div>
                           </div>
                         );
                       })}
                     </div>
 
-                    <button onClick={() => setExpandedGoal(isExpanded ? null : goalName)} style={{
-                      background: "transparent", border: "1px solid #1E293B", borderRadius: 7,
-                      padding: "6px 14px", color: "#475569", fontSize: 11, fontFamily: "inherit", cursor: "pointer",
-                    }}>
+                    <button onClick={() => setExpandedGoal(isExpanded ? null : goalName)} style={{ background: "transparent", border: "1px solid #1E293B", borderRadius: 7, padding: "6px 14px", color: "#475569", fontSize: 11, fontFamily: "inherit", cursor: "pointer" }}>
                       {isExpanded ? "▲ Hide Sessions" : `▼ Show All Sessions (${allSessions.length})`}
                     </button>
 
@@ -664,21 +747,13 @@ export default function App() {
                           ))}
                         </div>
                         {allSessions.map((s, i) => (
-                          <div key={i} style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 0.8fr 2fr", padding: "7px 14px", borderBottom: "1px solid #1E293B11", alignItems: "center" }}>
+                          <div key={s.id || i} style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 0.8fr 2fr", padding: "7px 14px", borderBottom: "1px solid #1E293B11", alignItems: "center" }}>
                             <span style={{ fontSize: 11, color: "#94A3B8" }}>{s.taskName}</span>
-                            <span style={{ fontSize: 10, color: "#475569" }}>{formatDate(s.startedAt)} {formatClock(s.startedAt)}</span>
-                            <span style={{ fontSize: 10, color: "#475569" }}>{formatClock(s.stoppedAt)}</span>
-                            <span style={{ fontSize: 10, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>{formatTime(s.durationSec)}</span>
-                            <input value={s.note}
-                              onChange={e => {
-                                const t = tasks.find(t => t.id === s.taskId);
-                                if (!t) return;
-                                const idx = t.sessions.findIndex(ss => ss.startedAt === s.startedAt && ss.stoppedAt === s.stoppedAt);
-                                if (idx >= 0) updateSessionNote(s.taskId, idx, e.target.value);
-                              }}
-                              placeholder="Add note..."
-                              style={{ background: "transparent", border: "1px solid #1E293B22", borderRadius: 4, padding: "3px 6px", color: "#E2E8F0", fontSize: 10, fontFamily: "inherit", outline: "none", width: "100%" }}
-                            />
+                            <span style={{ fontSize: 10, color: "#475569" }}>{formatDate(s.started_at)} {formatClock(s.started_at)}</span>
+                            <span style={{ fontSize: 10, color: "#475569" }}>{formatClock(s.stopped_at)}</span>
+                            <span style={{ fontSize: 10, color: "#64748B", fontVariantNumeric: "tabular-nums" }}>{formatTime(s.duration_sec)}</span>
+                            <input value={s.note || ""} onChange={e => updateSessionNote(s.id, e.target.value)} placeholder="Add note..."
+                              style={{ background: "transparent", border: "1px solid #1E293B22", borderRadius: 4, padding: "3px 6px", color: "#E2E8F0", fontSize: 10, fontFamily: "inherit", outline: "none", width: "100%" }} />
                           </div>
                         ))}
                       </div>
@@ -699,7 +774,8 @@ export default function App() {
 
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-        * { box-sizing: border-box; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { margin: 0; padding: 0; background: #080C14; }
         input::placeholder { color: #334155; }
         input:focus, select:focus { border-color: #334155 !important; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
@@ -712,14 +788,14 @@ export default function App() {
 }
 
 // ─── Task Card ────────────────────────────────────────────────────
-function TaskCard({ task, catColor, onStart, onPause, onFinish, onDelete, getWeeklyData, updateSessionNote }) {
+function TaskCard({ task, catColor, onStart, onPause, onFinish, onDelete, getWeeklyData, sessions, updateSessionNote }) {
   const status = getStatus(task); const ss = getStatusStyle(status);
-  const expectedSec = task.expectedMinutes * 60;
-  const pct = expectedSec > 0 ? Math.min((task.actualSeconds / expectedSec) * 100, 100) : 0;
-  const overTime = task.actualSeconds > expectedSec;
+  const expectedSec = task.expected_minutes * 60;
+  const pct = expectedSec > 0 ? Math.min((task.actual_seconds / expectedSec) * 100, 100) : 0;
+  const overTime = task.actual_seconds > expectedSec;
   const pr = PRIORITY_CONFIG[task.priority] || PRIORITY_CONFIG.Medium;
   const [showSessions, setShowSessions] = useState(false);
-  const weeklyInfo = task.linkedToWeekly && task.weeklyGoalName ? getWeeklyData(task.weeklyGoalName) : null;
+  const weeklyInfo = task.linked_to_weekly && task.weekly_goal_name ? getWeeklyData(task.weekly_goal_name) : null;
 
   return (
     <div style={{ background: "#0D1117", border: `1px solid ${task.running ? catColor + "44" : "#1E293B"}`, borderLeft: `3px solid ${catColor}`, borderRadius: 12, padding: "15px 17px", transition: "border-color 0.3s" }}>
@@ -730,28 +806,28 @@ function TaskCard({ task, catColor, onStart, onPause, onFinish, onDelete, getWee
             <span style={{ fontSize: 14, fontWeight: 600, color: "#F1F5F9" }}>{task.name}</span>
             <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}`, letterSpacing: 0.5, textTransform: "uppercase" }}>{status}</span>
             <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: pr.bg, color: pr.color, border: `1px solid ${pr.color}44`, letterSpacing: 0.5 }}>{task.priority}</span>
-            {task.linkedToWeekly && task.weeklyGoalName && (
+            {task.linked_to_weekly && task.weekly_goal_name && (
               <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: "#1a1a2e", color: "#A78BFA", border: "1px solid #A78BFA44" }}>
-                ↗ {task.weeklyGoalName} • {task.contributionPercent}%
+                ↗ {task.weekly_goal_name} • {task.contribution_percent}%
               </span>
             )}
           </div>
           <div style={{ display: "flex", gap: 14, fontSize: 10, color: "#475569", flexWrap: "wrap" }}>
             <span style={{ color: catColor }}>● {task.category}</span>
-            <span>Exp: {task.expectedMinutes}m</span>
-            {task.startedAt && <span>Started: {formatClock(task.startedAt)}</span>}
-            <span>{task.sessions.length} session{task.sessions.length !== 1 ? "s" : ""}</span>
+            <span>Exp: {task.expected_minutes}m</span>
+            {task.started_at && <span>Started: {formatClock(task.started_at)}</span>}
+            <span>{sessions.length} session{sessions.length !== 1 ? "s" : ""}</span>
             {task.notes && <span style={{ color: "#334155" }}>{task.notes}</span>}
           </div>
         </div>
         <div style={{ fontSize: 18, fontWeight: 700, minWidth: 75, textAlign: "right", color: overTime ? "#f87171" : "#00C896", fontVariantNumeric: "tabular-nums" }}>
-          {formatTime(task.actualSeconds)}
+          {formatTime(task.actual_seconds)}
         </div>
       </div>
 
       {weeklyInfo && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, padding: "6px 10px", background: "#0A0F1A", borderRadius: 8, border: "1px solid #1E293B" }}>
-          <span style={{ fontSize: 10, color: "#A78BFA", whiteSpace: "nowrap" }}>Weekly: {task.weeklyGoalName}</span>
+          <span style={{ fontSize: 10, color: "#A78BFA", whiteSpace: "nowrap" }}>Weekly: {task.weekly_goal_name}</span>
           <div style={{ flex: 1, height: 3, background: "#1E293B", borderRadius: 4 }}>
             <div style={{ height: "100%", borderRadius: 4, width: `${weeklyInfo.percent}%`, background: weeklyInfo.percent >= 100 ? "#4ade80" : "#A78BFA", transition: "width 0.5s" }} />
           </div>
@@ -764,33 +840,22 @@ function TaskCard({ task, catColor, onStart, onPause, onFinish, onDelete, getWee
       </div>
 
       <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-        {!task.running && (
-          <button onClick={() => onStart(task.id)} style={{ background: "#0A2818", border: "1px solid #00C896", borderRadius: 7, padding: "6px 14px", color: "#00C896", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>
-            {task.actualSeconds > 0 ? "▶ Resume" : "▶ Start"}
-          </button>
-        )}
-        {task.running && (
-          <button onClick={() => onPause(task.id)} style={{ background: "#0A1A2A", border: "1px solid #4F9DFF", borderRadius: 7, padding: "6px 14px", color: "#4F9DFF", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>⏸ Pause</button>
-        )}
+        {!task.running && <button onClick={() => onStart(task.id)} style={{ background: "#0A2818", border: "1px solid #00C896", borderRadius: 7, padding: "6px 14px", color: "#00C896", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>{task.actual_seconds > 0 ? "▶ Resume" : "▶ Start"}</button>}
+        {task.running && <button onClick={() => onPause(task.id)} style={{ background: "#0A1A2A", border: "1px solid #4F9DFF", borderRadius: 7, padding: "6px 14px", color: "#4F9DFF", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>⏸ Pause</button>}
         <button onClick={() => onFinish(task.id)} style={{ background: "#0A1A0A", border: "1px solid #4ade80", borderRadius: 7, padding: "6px 14px", color: "#4ade80", fontSize: 11, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>✓ Finish</button>
-        {task.sessions.length > 0 && (
-          <button onClick={() => setShowSessions(!showSessions)} style={{ background: "transparent", border: "1px solid #1E293B", borderRadius: 7, padding: "6px 12px", color: "#475569", fontSize: 10, fontFamily: "inherit", cursor: "pointer" }}>
-            {showSessions ? "▲ Hide" : `▼ ${task.sessions.length} session${task.sessions.length !== 1 ? "s" : ""}`}
-          </button>
-        )}
+        {sessions.length > 0 && <button onClick={() => setShowSessions(!showSessions)} style={{ background: "transparent", border: "1px solid #1E293B", borderRadius: 7, padding: "6px 12px", color: "#475569", fontSize: 10, fontFamily: "inherit", cursor: "pointer" }}>{showSessions ? "▲ Hide" : `▼ ${sessions.length} session${sessions.length !== 1 ? "s" : ""}`}</button>}
         <button onClick={() => onDelete(task.id)} style={{ background: "transparent", border: "1px solid #1E293B", borderRadius: 7, padding: "6px 10px", color: "#475569", fontSize: 11, fontFamily: "inherit", cursor: "pointer" }}>✕</button>
       </div>
 
-      {showSessions && task.sessions.length > 0 && (
+      {showSessions && sessions.length > 0 && (
         <div style={{ marginTop: 10, background: "#0A0F1A", borderRadius: 8, border: "1px solid #1E293B", overflow: "hidden" }}>
-          {task.sessions.map((s, i) => (
-            <div key={i} style={{ display: "grid", gridTemplateColumns: "auto auto auto auto 1fr", gap: 10, alignItems: "center", padding: "6px 12px", borderBottom: "1px solid #1E293B11", fontSize: 10 }}>
-              <span style={{ color: "#475569", minWidth: 55 }}>{formatClock(s.startedAt)}</span>
+          {sessions.map((s, i) => (
+            <div key={s.id || i} style={{ display: "grid", gridTemplateColumns: "auto auto auto auto 1fr", gap: 10, alignItems: "center", padding: "6px 12px", borderBottom: "1px solid #1E293B11", fontSize: 10 }}>
+              <span style={{ color: "#475569", minWidth: 55 }}>{formatClock(s.started_at)}</span>
               <span style={{ color: "#334155" }}>→</span>
-              <span style={{ color: "#475569", minWidth: 55 }}>{formatClock(s.stoppedAt)}</span>
-              <span style={{ color: "#64748B", fontVariantNumeric: "tabular-nums", minWidth: 50 }}>{formatTime(s.durationSec)}</span>
-              <input value={s.note} onChange={e => updateSessionNote(task.id, i, e.target.value)}
-                placeholder="Add session note..."
+              <span style={{ color: "#475569", minWidth: 55 }}>{formatClock(s.stopped_at)}</span>
+              <span style={{ color: "#64748B", fontVariantNumeric: "tabular-nums", minWidth: 50 }}>{formatTime(s.duration_sec)}</span>
+              <input value={s.note || ""} onChange={e => updateSessionNote(s.id, e.target.value)} placeholder="Add session note..."
                 style={{ background: "transparent", border: "1px solid #1E293B22", borderRadius: 4, padding: "3px 6px", color: "#E2E8F0", fontSize: 10, fontFamily: "inherit", outline: "none", width: "100%" }} />
             </div>
           ))}
