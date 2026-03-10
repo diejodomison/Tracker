@@ -205,7 +205,14 @@ export default function App() {
           supaFetch("sessions", "order=id.asc"),
         ]);
         if (cats.length > 0) setCategories(cats.map(c => ({ id: c.id, name: c.name, color: c.color })));
-        setTasks(tks.map(t => ({ ...t, _sessionStart: t.running ? new Date().toISOString() : null })));
+        setTasks(tks.map(t => {
+          if (t.running && t.session_start) {
+            // Recalculate: add elapsed time since session_start to stored actual_seconds
+            const elapsed = Math.round((Date.now() - new Date(t.session_start).getTime()) / 1000);
+            return { ...t, actual_seconds: t.actual_seconds + elapsed, _sessionStart: t.session_start };
+          }
+          return { ...t, _sessionStart: null };
+        }));
         setSessions(sess);
         setDbConnected(true);
         setSyncStatus("connected");
@@ -256,7 +263,7 @@ export default function App() {
     return () => clearInterval(tick);
   }, []);
 
-  // ── Save running task's actual_seconds to Supabase every 5s ──
+  // ── Save running task's actual_seconds to Supabase every 3s ──
   useEffect(() => {
     if (!supaEnabled || !dbConnected) return;
     const interval = setInterval(() => {
@@ -265,9 +272,32 @@ export default function App() {
           supaUpdate("tasks", t.id, { actual_seconds: t.actual_seconds });
         }
       });
-    }, 5000);
+    }, 3000);
     return () => clearInterval(interval);
   }, [tasks, supaEnabled, dbConnected]);
+
+  // ── Save immediately before page closes/refreshes ──
+  useEffect(() => {
+    if (!supaEnabled) return;
+    const handleUnload = () => {
+      tasks.forEach(t => {
+        if (t.running && t.id) {
+          // Use sendBeacon for reliable save on page close
+          const url = `${SUPABASE_URL}/rest/v1/tasks?id=eq.${t.id}`;
+          const body = JSON.stringify({ actual_seconds: t.actual_seconds });
+          const blob = new Blob([body], { type: "application/json" });
+          navigator.sendBeacon(url, blob);
+          // sendBeacon doesn't support custom headers, so also try fetch with keepalive
+          fetch(url, {
+            method: "PATCH", headers: SUPA.headers, body,
+            keepalive: true,
+          }).catch(() => {});
+        }
+      });
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => window.removeEventListener("beforeunload", handleUnload);
+  }, [tasks, supaEnabled]);
 
   const getCatColor = (name) => (categories.find(c => c.name === name) || {}).color || "#94A3B8";
 
@@ -305,6 +335,7 @@ export default function App() {
       linked_to_weekly: newTask.linkedToWeekly,
       weekly_goal_name: newTask.linkedToWeekly ? newTask.weeklyGoalName.trim() : "",
       contribution_percent: newTask.linkedToWeekly ? contrib : 0,
+      session_start: null,
     };
     if (supaEnabled) {
       const res = await supaInsert("tasks", taskData);
@@ -324,10 +355,9 @@ export default function App() {
       return t;
     }));
     if (supaEnabled) {
-      // Pause any running task
       const running = tasks.find(t => t.running && t.id !== id);
       if (running) {
-        await supaUpdate("tasks", running.id, { running: false, actual_seconds: running.actual_seconds });
+        await supaUpdate("tasks", running.id, { running: false, actual_seconds: running.actual_seconds, session_start: null });
         if (running._sessionStart) {
           const dur = Math.round((Date.now() - new Date(running._sessionStart).getTime()) / 1000);
           await supaInsert("sessions", { task_id: running.id, started_at: running._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
@@ -335,7 +365,7 @@ export default function App() {
         }
       }
       const task = tasks.find(t => t.id === id);
-      await supaUpdate("tasks", id, { running: true, started_at: task?.started_at || nowISO });
+      await supaUpdate("tasks", id, { running: true, started_at: task?.started_at || nowISO, session_start: nowISO });
     }
   };
 
@@ -344,7 +374,7 @@ export default function App() {
     const task = tasks.find(t => t.id === id);
     setTasks(prev => prev.map(t => t.id === id ? { ...t, running: false, _sessionStart: null } : t));
     if (supaEnabled && task) {
-      await supaUpdate("tasks", id, { running: false, actual_seconds: task.actual_seconds });
+      await supaUpdate("tasks", id, { running: false, actual_seconds: task.actual_seconds, session_start: null });
       if (task._sessionStart) {
         const dur = Math.round((Date.now() - new Date(task._sessionStart).getTime()) / 1000);
         const res = await supaInsert("sessions", { task_id: id, started_at: task._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
@@ -358,7 +388,7 @@ export default function App() {
     const task = tasks.find(t => t.id === id);
     setTasks(prev => prev.map(t => t.id === id ? { ...t, running: false, finished: true, finished_at: nowISO, _sessionStart: null } : t));
     if (supaEnabled && task) {
-      await supaUpdate("tasks", id, { running: false, finished: true, finished_at: nowISO, actual_seconds: task.actual_seconds });
+      await supaUpdate("tasks", id, { running: false, finished: true, finished_at: nowISO, actual_seconds: task.actual_seconds, session_start: null });
       if (task._sessionStart) {
         const dur = Math.round((Date.now() - new Date(task._sessionStart).getTime()) / 1000);
         const res = await supaInsert("sessions", { task_id: id, started_at: task._sessionStart, stopped_at: nowISO, duration_sec: dur, note: "" });
