@@ -207,8 +207,8 @@ export default function App() {
         if (cats.length > 0) setCategories(cats.map(c => ({ id: c.id, name: c.name, color: c.color })));
         setTasks(tks.map(t => {
           if (t.running && t.session_start) {
-            // Recalculate: add elapsed time since session_start to stored actual_seconds
-            const elapsed = Math.round((Date.now() - new Date(t.session_start).getTime()) / 1000);
+            // THE FIX: Calculate current time from session_start — same on every device
+            const elapsed = Math.max(0, Math.round((Date.now() - new Date(t.session_start).getTime()) / 1000));
             return { ...t, actual_seconds: t.actual_seconds + elapsed, _sessionStart: t.session_start };
           }
           return { ...t, _sessionStart: null };
@@ -225,7 +225,7 @@ export default function App() {
     loadData();
   }, []);
 
-  // ── Realtime polling (every 10s for other users' changes) ──
+  // ── Realtime polling (every 8s for other users' changes) ──
   useEffect(() => {
     if (!supaEnabled || !dbConnected) return;
     const interval = setInterval(async () => {
@@ -237,24 +237,25 @@ export default function App() {
         setTasks(prev => {
           return tks.map(remote => {
             const local = prev.find(l => l.id === remote.id);
-            if (!local) return { ...remote, _sessionStart: null };
-            // Always keep the higher actual_seconds (local timer is ahead of server)
-            const keepSeconds = Math.max(local.actual_seconds, remote.actual_seconds);
-            if (local.running) {
-              // Task is running locally — keep all local state
-              return { ...local, actual_seconds: keepSeconds };
+            if (remote.running && remote.session_start) {
+              // Running task: ALWAYS calculate from session_start — this is the single source of truth
+              const elapsed = Math.max(0, Math.round((Date.now() - new Date(remote.session_start).getTime()) / 1000));
+              const correctSeconds = remote.actual_seconds + elapsed;
+              // If local is also running this task, keep local _sessionStart
+              const sessionStart = (local && local._sessionStart) ? local._sessionStart : remote.session_start;
+              return { ...remote, actual_seconds: correctSeconds, _sessionStart: sessionStart };
             }
-            // Task not running locally — accept remote but keep higher seconds
-            return { ...remote, actual_seconds: keepSeconds, _sessionStart: null };
+            // Not running — just use server value
+            return { ...remote, _sessionStart: null };
           });
         });
         setSessions(sess);
       } catch (e) { /* silent fail on poll */ }
-    }, 10000);
+    }, 8000);
     return () => clearInterval(interval);
   }, [supaEnabled, dbConnected]);
 
-  // ── Timer tick ──
+  // ── Timer tick — only increments locally for smooth display ──
   useEffect(() => {
     const tick = setInterval(() => {
       setNow(new Date());
