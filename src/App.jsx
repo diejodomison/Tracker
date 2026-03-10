@@ -899,3 +899,4 @@ function TaskCard({ task, catColor, onStart, onPause, onFinish, onDelete, getWee
     </div>
   );
 }
+
